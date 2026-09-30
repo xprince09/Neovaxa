@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Caption Generator</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0b0b0f;
+      color: white;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 700px;
+      margin: auto;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    .sub {
+      text-align: center;
+      color: #aaa;
+      margin-bottom: 25px;
+    }
+
+    .upload {
+      border: 2px dashed #555;
+      border-radius: 18px;
+      padding: 35px 20px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      margin-top: 15px;
+    }
+
+    video {
+      width: 100%;
+      max-height: 500px;
+      background: black;
+      border-radius: 15px;
+      margin-top: 15px;
+    }
+
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 12px;
+      padding: 15px;
+      margin-top: 15px;
+      background: #ffffff;
+      color: #000;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+    }
+
+    #status {
+      margin-top: 18px;
+      text-align: center;
+      color: #bbb;
+      line-height: 1.5;
+    }
+
+    .caption-box {
+      margin-top: 20px;
+      padding: 20px;
+      border-radius: 15px;
+      background: #17171d;
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+
+    #caption {
+      font-size: 27px;
+      font-weight: 800;
+      line-height: 1.25;
+    }
+
+    .progress {
+      margin-top: 15px;
+      height: 8px;
+      background: #292930;
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    #bar {
+      height: 100%;
+      width: 0%;
+      background: white;
+      transition: width 0.2s;
+    }
+
+    .info {
+      margin-top: 20px;
+      padding: 15px;
+      border-radius: 12px;
+      background: #141419;
+      color: #aaa;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <h1>🎬 Caption Generator</h1>
+  <div class="sub">
+    Video upload karo aur audio se captions generate karo
+  </div>
+
+  <div class="upload">
+    <b>Video Select Karo</b>
+    <input id="videoInput" type="file" accept="video/*">
+  </div>
+
+  <video id="video" controls></video>
+
+  <button id="generateBtn" disabled>
+    Generate Captions
+  </button>
+
+  <div class="progress">
+    <div id="bar"></div>
+  </div>
+
+  <div id="status">
+    Video select karo.
+  </div>
+
+  <div class="caption-box">
+    <div id="caption">Caption yahan dikhega</div>
+  </div>
+
+  <div class="info">
+    Pehli baar speech-recognition model download hone mein time lag sakta hai.
+    Model browser mein load hone ke baad processing comparatively faster hogi.
+  </div>
+
+</div>
+
+<script type="module">
+
+import {
+  pipeline
+} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1";
+
+const videoInput = document.getElementById("videoInput");
+const video = document.getElementById("video");
+const generateBtn = document.getElementById("generateBtn");
+const statusText = document.getElementById("status");
+const caption = document.getElementById("caption");
+const bar = document.getElementById("bar");
+
+let videoFile = null;
+let captions = [];
+let recognizer = null;
+
+
+/* --------------------------------
+   VIDEO SELECT
+-------------------------------- */
+
+videoInput.addEventListener("change", () => {
+
+  videoFile = videoInput.files[0];
+
+  if (!videoFile) return;
+
+  video.src = URL.createObjectURL(videoFile);
+
+  generateBtn.disabled = false;
+
+  statusText.textContent =
+    "Video ready hai. Generate Captions dabao.";
+
+});
+
+
+/* --------------------------------
+   LOAD WHISPER MODEL
+-------------------------------- */
+
+async function loadModel() {
+
+  if (recognizer) return recognizer;
+
+  statusText.textContent =
+    "AI speech model load ho raha hai... Pehli baar thoda time lagega.";
+
+  recognizer = await pipeline(
+    "automatic-speech-recognition",
+    "onnx-community/whisper-small",
+    {
+      dtype: "q8",
+      device: "wasm"
+    }
+  );
+
+  return recognizer;
+}
+
+
+/* --------------------------------
+   EXTRACT AUDIO FROM VIDEO
+-------------------------------- */
+
+async function extractAudio(file) {
+
+  statusText.textContent =
+    "Video ki audio read ho rahi hai...";
+
+  const arrayBuffer = await file.arrayBuffer();
+
+  const audioContext =
+    new AudioContext({
+      sampleRate: 16000
+    });
+
+  const audioBuffer =
+    await audioContext.decodeAudioData(arrayBuffer);
+
+  const channel =
+    audioBuffer.getChannelData(0);
+
+  /*
+    Whisper normally works at 16 kHz.
+    Agar browser ne different sample rate diya,
+    to simple resampling karenge.
+  */
+
+  if (audioBuffer.sampleRate === 16000) {
+    return channel;
+  }
+
+  const ratio = 16000 / audioBuffer.sampleRate;
+
+  const newLength =
+    Math.floor(channel.length * ratio);
+
+  const result =
+    new Float32Array(newLength);
+
+  for (let i = 0; i < newLength; i++) {
+
+    const position = i / ratio;
+
+    const left =
+      Math.floor(position);
+
+    const right =
+      Math.min(left + 1, channel.length - 1);
+
+    const weight =
+      position - left;
+
+    result[i] =
+      channel[left] * (1 - weight) +
+      channel[right] * weight;
+  }
+
+  return result;
+}
+
+
+/* --------------------------------
+   GENERATE CAPTIONS
+-------------------------------- */
+
+generateBtn.addEventListener("click", async () => {
+
+  if (!videoFile) return;
+
+  try {
+
+    generateBtn.disabled = true;
+
+    caption.textContent = "";
+
+    bar.style.width = "5%";
+
+    const model =
+      await loadModel();
+
+    bar.style.width = "20%";
+
+    const audio =
+      await extractAudio(videoFile);
+
+    bar.style.width = "35%";
+
+    statusText.textContent =
+      "Audio ko speech mein convert kiya ja raha hai...";
+
+    const result =
+      await model(audio, {
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: true,
+        language: "hindi",
+        task: "transcribe"
+      });
+
+    bar.style.width = "90%";
+
+    captions = [];
+
+    if (result.chunks) {
+
+      for (const chunk of result.chunks) {
+
+        if (!chunk.text) continue;
+
+        const timestamp =
+          chunk.timestamp;
+
+        captions.push({
+          start: timestamp[0] || 0,
+          end: timestamp[1] || timestamp[0] + 2,
+          text: chunk.text.trim()
+        });
+      }
+
+    }
+
+    /*
+      Agar chunks nahi mile,
+      to complete transcript ko ek caption
+      ke रूप में रखेंगे.
+    */
+
+    if (captions.length === 0 && result.text) {
+
+      captions.push({
+        start: 0,
+        end: video.duration || 9999,
+        text: result.text.trim()
+      });
+
+    }
+
+    bar.style.width = "100%";
+
+    statusText.textContent =
+      `${captions.length} timed captions generate ho gaye.`;
+
+    generateBtn.disabled = false;
+
+    /*
+      Video ko beginning par le jao
+      aur captions automatically sync honge.
+    */
+
+    video.currentTime = 0;
+
+  } catch (error) {
+
+    console.error(error);
+
+    statusText.textContent =
+      "❌ Caption generate nahi ho paaye: " +
+      error.message;
+
+    generateBtn.disabled = false;
+  }
+
+});
+
+
+/* --------------------------------
+   LIVE CAPTION SYNC
+-------------------------------- */
+
+video.addEventListener("timeupdate", () => {
+
+  if (!captions.length) return;
+
+  const currentTime =
+    video.currentTime;
+
+  const active =
+    captions.find(item =>
+      currentTime >= item.start &&
+      currentTime < item.end
+    );
+
+  if (active) {
+
+    caption.textContent =
+      active.text;
+
+  } else {
+
+    caption.textContent = "";
+
+  }
+
+});
+
+
+/* --------------------------------
+   CLEAR CAPTION WHEN VIDEO ENDS
+-------------------------------- */
+
+video.addEventListener("ended", () => {
+
+  caption.textContent = "";
+
+});
+
+</script>
+
+</body>
+</html>
